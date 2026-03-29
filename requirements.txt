@@ -1,5 +1,5 @@
-streamlit
-librosa
-numpy
-pydub
-tensorflow>=2.16
+streamlit>=1.33,<2.0
+librosa>=0.10.2
+numpy<2.0
+pydub>=0.25.1
+tensorflow==2.16.2

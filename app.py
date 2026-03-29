@@ -2,13 +2,16 @@ import streamlit as st
 import numpy as np
 import librosa
 import os
+import tempfile
+import importlib.util
+import importlib
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 
 # Import TFLite secara aman
-try:
-    import tflite_runtime.interpreter as tflite
-except ImportError:
+if importlib.util.find_spec("tflite_runtime.interpreter") is not None:
+    tflite = importlib.import_module("tflite_runtime.interpreter")
+else:
     from tensorflow import lite as tflite
 
 # --- KONFIGURASI & KAMUS ---
@@ -56,47 +59,50 @@ if uploaded_file:
     
     if st.button("🚀 Mulai Dekode"):
         with st.spinner("Menganalisis sinyal audio..."):
-            # Simpan file sementara
-            temp_input = "input_audio.wav"
-            with open(temp_input, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            # Load Model
+            temp_input = None
             try:
-                interp = load_model("morse_model.tflite")
-            except Exception as e:
-                st.error(f"Gagal memuat model: {e}. Pastikan file 'morse_model.tflite' ada di folder yang sama.")
-                st.stop()
+                # Simpan file upload sebagai file temporer unik per-request.
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(uploaded_file.getbuffer())
+                    temp_input = tmp.name
 
-            # 1. Segmentasi Audio (Memisahkan Beep berdasarkan Silence)
-            audio = AudioSegment.from_wav(temp_input)
-            # min_silence_len: durasi diam minimal antar ketukan (ms)
-            # silence_thresh: ambang batas kebisingan (dBFS)
-            chunks = split_on_silence(audio, min_silence_len=100, silence_thresh=-40)
-            
-            if not chunks:
-                st.warning("Tidak ditemukan sinyal Morse. Coba sesuaikan volume audio atau silence threshold.")
-            else:
-                simbol_hasil = ""
-                for i, chunk in enumerate(chunks):
-                    chunk_name = f"chunk_{i}.wav"
-                    chunk.export(chunk_name, format="wav")
-                    
-                    # Prediksi tiap segment
-                    res = predict_segment(interp, chunk_name)
-                    simbol_hasil += res
-                    
-                    os.remove(chunk_name) # Hapus file sampah
-                
-                # Menampilkan Hasil
-                st.subheader("Hasil Deteksi Simbol")
-                st.success(f"Sandi Morse: `{simbol_hasil}`")
-                
-                # Terjemahan ke Huruf (Logika sederhana)
-                # Catatan: Logika ini mengasumsikan input adalah satu karakter/kata tanpa spasi antar huruf
-                translation = MORSE_CODE_DICT.get(simbol_hasil, "Kombinasi tidak dikenal")
-                
-                st.subheader("Terjemahan Teks")
-                st.info(f"Karakter: **{translation}**")
-            
-            os.remove(temp_input)
+                # Load model dengan path absolut relatif ke file app.py.
+                model_path = os.path.join(os.path.dirname(__file__), "morse_model.tflite")
+                try:
+                    interp = load_model(model_path)
+                except Exception as e:
+                    st.error(f"Gagal memuat model: {e}. Pastikan file 'morse_model.tflite' ada di folder yang sama.")
+                    st.stop()
+
+                # 1. Segmentasi Audio (Memisahkan beep berdasarkan silence)
+                audio = AudioSegment.from_wav(temp_input)
+                # min_silence_len: durasi diam minimal antar ketukan (ms)
+                # silence_thresh: ambang batas kebisingan (dBFS)
+                chunks = split_on_silence(audio, min_silence_len=100, silence_thresh=-40)
+
+                if not chunks:
+                    st.warning("Tidak ditemukan sinyal Morse. Coba sesuaikan volume audio atau silence threshold.")
+                else:
+                    simbol_hasil = ""
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        for i, chunk in enumerate(chunks):
+                            chunk_name = os.path.join(temp_dir, f"chunk_{i}.wav")
+                            chunk.export(chunk_name, format="wav")
+
+                            # Prediksi tiap segment
+                            res = predict_segment(interp, chunk_name)
+                            simbol_hasil += res
+
+                    # Menampilkan hasil
+                    st.subheader("Hasil Deteksi Simbol")
+                    st.success(f"Sandi Morse: `{simbol_hasil}`")
+
+                    # Terjemahan ke huruf (logika sederhana)
+                    # Catatan: mengasumsikan input adalah satu karakter/kata tanpa spasi antar huruf
+                    translation = MORSE_CODE_DICT.get(simbol_hasil, "Kombinasi tidak dikenal")
+
+                    st.subheader("Terjemahan Teks")
+                    st.info(f"Karakter: **{translation}**")
+            finally:
+                if temp_input and os.path.exists(temp_input):
+                    os.remove(temp_input)
